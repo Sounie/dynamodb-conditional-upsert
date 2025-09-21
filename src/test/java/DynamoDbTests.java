@@ -17,6 +17,8 @@ import java.time.temporal.ChronoUnit;
 import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -70,6 +72,8 @@ public class DynamoDbTests {
 
     @Test
     void testWriteDataThenUpsert() {
+        AtomicInteger completed = new AtomicInteger(0);
+
         DynamoDbClient dbClient = DynamoDbClient.builder()
                 .endpointOverride(localstack.getEndpointOverride(LocalStackContainer.Service.DYNAMODB)) // LocalStack endpoint
                 .credentialsProvider(StaticCredentialsProvider.create(
@@ -81,7 +85,7 @@ public class DynamoDbTests {
         String initialVersion = "0";
         Map<String, AttributeValue> eventDataStarting = Map.of("id", AttributeValue.builder().s(idAsString).build(),
                 "version", AttributeValue.builder().n(initialVersion).build());
-        System.out.println("DEBUG eventDataStarting"+eventDataStarting.toString());
+        System.out.println("DEBUG eventDataStarting"+eventDataStarting);
         dbClient.putItem(
                 PutItemRequest.builder().tableName("event")
                         .item(eventDataStarting)
@@ -97,58 +101,62 @@ public class DynamoDbTests {
                 });
 
         // Setting up multiple concurrent updates to each have an attempt to update the version.
-        // If we have a "safe" mechanism for updating then we should always end up with the highest versiop (102) in place
+        // If we have a "safe" mechanism for updating then we should always end up with the highest versiop (101) in place
         List<Integer> versionValues = new ArrayList<>(100);
-        for (int i = 2; i <= 102; i++) {
+        for (int i = 2; i <= 101; i++) {
             versionValues.add(i); // Starting from 2
         }
 
         Collections.shuffle(versionValues);
 
         // Set up a concurrent executor to perform the upsert calls concurrently
-        try (ExecutorService executorService = Executors.newVirtualThreadPerTaskExecutor()) {
-            System.out.println("Set up executor service");
+        ExecutorService executorService = Executors.newVirtualThreadPerTaskExecutor();
+        System.out.println("Set up executor service");
 
-            for (int i = 0; i < versionValues.size(); i++) {
-                String version = versionValues.get(i).toString();
+        for (Integer versionValue : versionValues) {
+            String version = versionValue.toString();
 
-                executorService.submit(() -> {
-                    Map<String, AttributeValue> eventDataUpdating = Map.of("id", AttributeValue.builder().s(idAsString).build(),
-                            "version", AttributeValue.builder().n(version).build());
-                    try {
-                        PutItemResponse putItemResponse2 = dbClient.putItem(
-                                PutItemRequest.builder().tableName("event")
-                                        .item(eventDataUpdating)
-                                        .conditionExpression("attribute_not_exists(id) OR (version < :version)")
-                                        .expressionAttributeValues(Map.of(":version", AttributeValue.builder().n(version).build()))
-                                        .returnValuesOnConditionCheckFailure(ReturnValuesOnConditionCheckFailure.ALL_OLD)
-                                        .build());
+            executorService.submit(() -> {
+                Map<String, AttributeValue> eventDataUpdating = Map.of("id", AttributeValue.builder().s(idAsString).build(),
+                        "version", AttributeValue.builder().n(version).build());
+                try {
+                    PutItemResponse putItemResponse2 = dbClient.putItem(
+                            PutItemRequest.builder().tableName("event")
+                                    .item(eventDataUpdating)
+                                    .conditionExpression("attribute_not_exists(id) OR (version < :version)")
+                                    .expressionAttributeValues(Map.of(":version", AttributeValue.builder().n(version).build()))
+                                    .returnValuesOnConditionCheckFailure(ReturnValuesOnConditionCheckFailure.ALL_OLD)
+                                    .build());
 
-                        // Can be a mix of exceptions and successful updates
-                    } catch (ConditionalCheckFailedException e) {
-                        System.out.println("DEBUG - update failed as existing version already higher");
-                        // Expected when updatingVersion is lower value than startingVersion
-                        assertThat(e.isThrottlingException()).isFalse();
-                        assertThat(e.isRetryableException()).isFalse();
-                        assertThat(e.isClockSkewException()).isFalse();
+                    completed.incrementAndGet();
+                    // Can be a mix of exceptions and successful updates
+                } catch (ConditionalCheckFailedException e) {
+                    System.out.println("DEBUG - update failed as existing version " + e.item().get("version").n() + " already higher than " + version);
+                    // Expected when updatingVersion is lower value than startingVersion
+                    assertThat(e.isThrottlingException()).isFalse();
+                    assertThat(e.isRetryableException()).isFalse();
+                    assertThat(e.isClockSkewException()).isFalse();
 
-                        assertThat(e.item()).isNotEmpty();
-                        assertThat(e.item().get("version").n()).isNotEqualTo(version);
-                    }
-                });
-            }
-        } catch (Exception e) {
-            System.err.println("Executor service failed " + e.getMessage());
+                    assertThat(e.item()).isNotEmpty();
+                    assertThat(e.item().get("version").n()).isNotEqualTo(version);
+                    completed.incrementAndGet();
+                }
+            });
         }
 
-        // When updating version has a lower numeric value than starting version, we expect to preserve starting version
         try {
-            Thread.sleep(8000L);
-        } catch (InterruptedException e) {}
+            executorService.shutdown();
+            boolean terminated = executorService.awaitTermination(80L, TimeUnit.SECONDS);
+
+            assertThat(completed.get()).isEqualTo(100);
+            assertThat(terminated).withFailMessage("Executor service not terminated cleanly?").isTrue();
+        }  catch (InterruptedException e) {
+            e.printStackTrace();
+        }
 
         GetItemResponse getItemResponseAfterUpdate = dbClient.getItem(GetItemRequest.builder().tableName("event")
-                                    .key(Map.of("id", AttributeValue.builder().s(idAsString).build())).
-                                    build());
-        assertThat(getItemResponseAfterUpdate.item().get("version").n()).isEqualTo("102");
+                            .key(Map.of("id", AttributeValue.builder().s(idAsString).build())).
+                            build());
+        assertThat(getItemResponseAfterUpdate.item().get("version").n()).isEqualTo("101");
     }
 }
