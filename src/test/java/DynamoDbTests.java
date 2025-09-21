@@ -89,6 +89,9 @@ public class DynamoDbTests {
         dbClient.putItem(
                 PutItemRequest.builder().tableName("event")
                         .item(eventDataStarting)
+                        .conditionExpression("attribute_not_exists(id) OR (version < :version)")
+                        .expressionAttributeValues(Map.of(":version", AttributeValue.builder().n(initialVersion).build()))
+                        .returnValuesOnConditionCheckFailure(ReturnValuesOnConditionCheckFailure.ALL_OLD)
                         .build());
 
         Awaitility.waitAtMost(Duration.of(30, ChronoUnit.SECONDS))
