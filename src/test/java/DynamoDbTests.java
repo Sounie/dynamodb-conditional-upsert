@@ -35,34 +35,36 @@ public class DynamoDbTests {
                 .until(() -> localstack.isCreated() && localstack.isRunning() && localstack.isHealthy());
 
         // Setting up client to talk to localstack Docker container
-        DynamoDbClient dbClient = DynamoDbClient.builder()
+        try (DynamoDbClient dbClient = DynamoDbClient.builder()
                 .endpointOverride(localstack.getEndpointOverride(LocalStackContainer.Service.DYNAMODB)) // LocalStack endpoint
                 .credentialsProvider(StaticCredentialsProvider.create(
                         AwsBasicCredentials.create(localstack.getAccessKey(), localstack.getSecretKey())))
                 .region(Region.of(localstack.getRegion()))
-                .build();
+                .build()) {
 
-        // Creation of table
-        CreateTableRequest createTableRequest = CreateTableRequest.builder()
-                .tableName("event")
-                .keySchema(KeySchemaElement.builder()
-                        .attributeName("id")
-                        .keyType(KeyType.HASH)
-                        .build())
-                .attributeDefinitions(AttributeDefinition.builder()
-                        .attributeName("id")
-                        .attributeType(ScalarAttributeType.S)
-                        .build())
-                .provisionedThroughput(ProvisionedThroughput.builder()
-                        .readCapacityUnits(200L)
-                        .writeCapacityUnits(200L)
-                        .build())
-                .build();
+            // Creation of table
+            CreateTableRequest createTableRequest = CreateTableRequest.builder()
+                    .tableName("event")
+                    .keySchema(KeySchemaElement.builder()
+                            .attributeName("id")
+                            .keyType(KeyType.HASH)
+                            .build())
+                    .attributeDefinitions(AttributeDefinition.builder()
+                            .attributeName("id")
+                            .attributeType(ScalarAttributeType.S)
+                            .build())
+                    .provisionedThroughput(ProvisionedThroughput.builder()
+                            .readCapacityUnits(200L)
+                            .writeCapacityUnits(200L)
+                            .build())
+                    .build();
 
-        CreateTableResponse createTableResponse = dbClient.createTable(createTableRequest);
-        SdkHttpResponse sdkHttpResponse = createTableResponse.sdkHttpResponse();
+            CreateTableResponse createTableResponse = dbClient.createTable(createTableRequest);
 
-        System.out.println("Create table response: " + sdkHttpResponse.statusCode());
+            SdkHttpResponse sdkHttpResponse = createTableResponse.sdkHttpResponse();
+
+            System.out.println("Create table response: " + sdkHttpResponse.statusCode());
+        }
     }
 
     @AfterAll
@@ -135,13 +137,15 @@ public class DynamoDbTests {
                     // Can be a mix of exceptions and successful updates
                 } catch (ConditionalCheckFailedException e) {
                     System.out.println("DEBUG - update failed as existing version " + e.item().get("version").n() + " already higher than " + version);
-                    // Expected when updatingVersion is lower value than startingVersion
                     assertThat(e.isThrottlingException()).isFalse();
                     assertThat(e.isRetryableException()).isFalse();
                     assertThat(e.isClockSkewException()).isFalse();
 
                     assertThat(e.item()).isNotEmpty();
-                    assertThat(e.item().get("version").n()).isNotEqualTo(version);
+                    // Expect updatingVersion is lower value than existing version
+                    int versionAsInt = Integer.parseInt(version);
+                    int existingVersionAsInt = Integer.parseInt(e.item().get("version").n());
+                    assertThat(existingVersionAsInt).isGreaterThan(versionAsInt);
                     completed.incrementAndGet();
                 }
             });
@@ -154,12 +158,14 @@ public class DynamoDbTests {
             assertThat(completed.get()).isEqualTo(100);
             assertThat(terminated).withFailMessage("Executor service not terminated cleanly?").isTrue();
         }  catch (InterruptedException e) {
-            e.printStackTrace();
+            System.err.println("Interrupted while waiting for executor service to terminate");
         }
 
         GetItemResponse getItemResponseAfterUpdate = dbClient.getItem(GetItemRequest.builder().tableName("event")
                             .key(Map.of("id", AttributeValue.builder().s(idAsString).build())).
                             build());
+
+        dbClient.close();
         assertThat(getItemResponseAfterUpdate.item().get("version").n()).isEqualTo("101");
     }
 }
