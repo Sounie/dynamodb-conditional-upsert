@@ -27,7 +27,7 @@ public class DynamoDbTests {
 
     @BeforeAll
     static void setup() {
-        localstack = new LocalStackContainer(DockerImageName.parse("localstack/localstack:4.6.0"))
+        localstack = new LocalStackContainer(DockerImageName.parse("localstack/localstack:4.9.1"))
                 .withServices(LocalStackContainer.Service.DYNAMODB);
         localstack.start();
 
