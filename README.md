@@ -4,3 +4,8 @@ Trying out what is involved in getting DynamoDB to support a conditional upsert.
  - If a record with the specified id already exists
    - If the specified version is greater than the existing version then overwrite the record with the newer, later version.
    - If the specified version is less than or the same as the existing version then leave the existing record as it is.
+
+Docker
+ - To make TestContainers work with Docker I needed to apply a configuration change, as per:
+   https://github.com/testcontainers/testcontainers-java/issues/11212#issuecomment-3516573631
+ - 
