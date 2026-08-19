@@ -17,6 +17,18 @@ jobs:
       with:
         java-version: '25'
         distribution: 'temurin'
+        cache: 'maven'
+
+    - name: Set up Localstack container with DynamoDB
+      uses: localstack/setup-localstack@v0.2.3
+      with:
+        image-tag: '4.9.1'
+        use-pro: 'false'
+        install-awslocal: 'false'
+        configuration: 'SERVICES=dynamodb'
 
     - name: Build with Maven
       run: mvn -B test
+      env:
+        # Tells the tests to use the localstack started above rather than starting their own via TestContainers
+        LOCALSTACK_ENDPOINT: http://localhost:4566
