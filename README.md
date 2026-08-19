@@ -10,7 +10,7 @@ Running the tests
 The tests need a localstack instance providing DynamoDB. They obtain one in either of two ways:
 
  - If the `LOCALSTACK_ENDPOINT` environment variable is set, they use the already running localstack at that
-   endpoint. This is what CI does, where localstack is started by the `localstack/setup-localstack` action.
+   endpoint. This is what CI does, where localstack runs as a service container alongside the job.
  - Otherwise they start localstack themselves via TestContainers, which requires a working Docker setup.
 
 To run against a localstack that you started yourself:
