@@ -9,14 +9,44 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    # Localstack runs alongside the job, so the tests do not need to start a container themselves.
+    # Run as a plain container rather than via the localstack CLI, as the CLI requires a localstack
+    # account even when no pro features are used.
+    services:
+      localstack:
+        image: localstack/localstack:4.9.1
+        ports:
+          - 4566:4566
+        env:
+          SERVICES: dynamodb
+
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
     - name: Set up JDK 25
-      uses: actions/setup-java@v4
+      uses: actions/setup-java@v5
       with:
         java-version: '25'
         distribution: 'temurin'
+        cache: 'maven'
+
+    - name: Wait for localstack DynamoDB
+      run: |
+        for attempt in $(seq 1 60); do
+          if curl -sf http://localhost:4566/_localstack/health |
+              grep -qE '"dynamodb": *"(available|running)"'; then
+            echo "Localstack ready after ${attempt} attempt(s)"
+            exit 0
+          fi
+          sleep 2
+        done
+        echo "Localstack did not become ready in time. Last health response:"
+        curl -s http://localhost:4566/_localstack/health || true
+        docker logs "${{ job.services.localstack.id }}" || true
+        exit 1
 
     - name: Build with Maven
       run: mvn -B test
+      env:
+        # Tells the tests to use the localstack service container rather than starting their own via TestContainers
+        LOCALSTACK_ENDPOINT: http://localhost:4566

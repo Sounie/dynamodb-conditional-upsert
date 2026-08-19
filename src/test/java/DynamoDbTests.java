@@ -12,6 +12,7 @@ import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.*;
 
+import java.net.URI;
 import java.time.Duration;
 import java.time.temporal.ChronoUnit;
 import java.util.*;
@@ -23,65 +24,103 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 
 public class DynamoDbTests {
+    /**
+     * When set, tests talk to an already running localstack at this endpoint rather than starting
+     * one via TestContainers. CI sets this, as localstack is started there by the
+     * localstack/setup-localstack action.
+     */
+    private static final String ENDPOINT_ENV_VARIABLE = "LOCALSTACK_ENDPOINT";
+
+    /** Only populated when we start localstack ourselves. */
     private static LocalStackContainer localstack;
+
+    private static URI endpoint;
+    private static String accessKey;
+    private static String secretKey;
+    private static String region;
 
     @BeforeAll
     static void setup() {
-        localstack = new LocalStackContainer(DockerImageName.parse("localstack/localstack:4.9.1"))
-                .withServices(LocalStackContainer.Service.DYNAMODB);
-        localstack.start();
+        String externalEndpoint = System.getenv(ENDPOINT_ENV_VARIABLE);
 
-        Awaitility.waitAtMost(Duration.of(30, ChronoUnit.SECONDS))
-                .until(() -> localstack.isCreated() && localstack.isRunning() && localstack.isHealthy());
+        if (externalEndpoint != null && !externalEndpoint.isBlank()) {
+            System.out.println("Using already running localstack at " + externalEndpoint);
+            endpoint = URI.create(externalEndpoint);
+            // Localstack accepts any credentials, but the SDK requires that some are supplied.
+            accessKey = "test";
+            secretKey = "test";
+            region = "us-east-1";
+        } else {
+            System.out.println("Starting localstack via TestContainers");
+            localstack = new LocalStackContainer(DockerImageName.parse("localstack/localstack:4.9.1"))
+                    .withServices(LocalStackContainer.Service.DYNAMODB);
+            localstack.start();
 
-        // Setting up client to talk to localstack Docker container
-        try (DynamoDbClient dbClient = DynamoDbClient.builder()
-                .endpointOverride(localstack.getEndpointOverride(LocalStackContainer.Service.DYNAMODB)) // LocalStack endpoint
-                .credentialsProvider(StaticCredentialsProvider.create(
-                        AwsBasicCredentials.create(localstack.getAccessKey(), localstack.getSecretKey())))
-                .region(Region.of(localstack.getRegion()))
-                .build()) {
+            Awaitility.waitAtMost(Duration.of(30, ChronoUnit.SECONDS))
+                    .until(() -> localstack.isCreated() && localstack.isRunning() && localstack.isHealthy());
 
-            // Creation of table
-            CreateTableRequest createTableRequest = CreateTableRequest.builder()
-                    .tableName("event")
-                    .keySchema(KeySchemaElement.builder()
-                            .attributeName("id")
-                            .keyType(KeyType.HASH)
-                            .build())
-                    .attributeDefinitions(AttributeDefinition.builder()
-                            .attributeName("id")
-                            .attributeType(ScalarAttributeType.S)
-                            .build())
-                    .provisionedThroughput(ProvisionedThroughput.builder()
-                            .readCapacityUnits(200L)
-                            .writeCapacityUnits(200L)
-                            .build())
-                    .build();
+            endpoint = localstack.getEndpointOverride(LocalStackContainer.Service.DYNAMODB);
+            accessKey = localstack.getAccessKey();
+            secretKey = localstack.getSecretKey();
+            region = localstack.getRegion();
+        }
 
-            CreateTableResponse createTableResponse = dbClient.createTable(createTableRequest);
-
-            SdkHttpResponse sdkHttpResponse = createTableResponse.sdkHttpResponse();
-
-            System.out.println("Create table response: " + sdkHttpResponse.statusCode());
+        // Setting up client to talk to localstack
+        try (DynamoDbClient dbClient = createClient()) {
+            createEventTable(dbClient);
         }
     }
 
     @AfterAll
     static void teardown() {
-        localstack.stop();
+        if (localstack != null) {
+            localstack.stop();
+        }
+    }
+
+    private static DynamoDbClient createClient() {
+        return DynamoDbClient.builder()
+                .endpointOverride(endpoint) // Localstack endpoint
+                .credentialsProvider(StaticCredentialsProvider.create(
+                        AwsBasicCredentials.create(accessKey, secretKey)))
+                .region(Region.of(region))
+                .build();
+    }
+
+    private static void createEventTable(DynamoDbClient dbClient) {
+        CreateTableRequest createTableRequest = CreateTableRequest.builder()
+                .tableName("event")
+                .keySchema(KeySchemaElement.builder()
+                        .attributeName("id")
+                        .keyType(KeyType.HASH)
+                        .build())
+                .attributeDefinitions(AttributeDefinition.builder()
+                        .attributeName("id")
+                        .attributeType(ScalarAttributeType.S)
+                        .build())
+                .provisionedThroughput(ProvisionedThroughput.builder()
+                        .readCapacityUnits(200L)
+                        .writeCapacityUnits(200L)
+                        .build())
+                .build();
+
+        try {
+            CreateTableResponse createTableResponse = dbClient.createTable(createTableRequest);
+
+            SdkHttpResponse sdkHttpResponse = createTableResponse.sdkHttpResponse();
+
+            System.out.println("Create table response: " + sdkHttpResponse.statusCode());
+        } catch (ResourceInUseException e) {
+            // A localstack instance that we did not start may already hold the table from an earlier run
+            System.out.println("Table 'event' already exists, reusing it");
+        }
     }
 
     @Test
     void testWriteDataThenUpsert() {
         AtomicInteger completed = new AtomicInteger(0);
 
-        DynamoDbClient dbClient = DynamoDbClient.builder()
-                .endpointOverride(localstack.getEndpointOverride(LocalStackContainer.Service.DYNAMODB)) // LocalStack endpoint
-                .credentialsProvider(StaticCredentialsProvider.create(
-                        AwsBasicCredentials.create(localstack.getAccessKey(), localstack.getSecretKey())))
-                .region(Region.of(localstack.getRegion()))
-                .build();
+        DynamoDbClient dbClient = createClient();
 
         String idAsString =  UUID.randomUUID().toString();
         String initialVersion = "0";
